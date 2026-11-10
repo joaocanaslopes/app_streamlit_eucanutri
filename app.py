@@ -21,8 +21,15 @@ def load_all_models():
     
     device = torch.device('cpu') # Forçamos CPU para o Streamlit Free Tier
     
+    # Obter o token de forma segura dos segredos do Streamlit Cloud
+    hf_token = st.secrets.get("HF_TOKEN", None)
+    
     # --- Definir e Carregar ResNet50 ---
-    resnet_path = hf_hub_download(repo_id=REPO_ID, filename="resnet50_eucalipto.pth")
+    resnet_path = hf_hub_download(
+        repo_id=REPO_ID, 
+        filename="resnet50_eucalipto.pth",
+        token=hf_token
+    )
     model_rn = models.resnet50(weights=None)
     in_features_rn = model_rn.fc.in_features
     model_rn.fc = nn.Sequential(
@@ -35,7 +42,11 @@ def load_all_models():
     model_rn.eval()
     
     # --- Definir e Carregar EfficientNet-B0 ---
-    effnet_path = hf_hub_download(repo_id=REPO_ID, filename="efficientnet_eucalipto.pth")
+    effnet_path = hf_hub_download(
+        repo_id=REPO_ID, 
+        filename="efficientnet_eucalipto.pth",
+        token=hf_token
+    )
     model_en = models.efficientnet_b0(weights=None)
     in_features_en = model_en.classifier[1].in_features
     model_en.classifier = nn.Sequential(
@@ -52,7 +63,7 @@ def load_all_models():
 try:
     resnet_model, efficientnet_model = load_all_models()
 except Exception as e:
-    st.error(f"Erro ao carregar modelos do Hugging Face. Verifica se o repo é público. Erro: {e}")
+    st.error(f"Erro ao carregar modelos do Hugging Face. Verifica se o token e o repositório estão corretos. Erro: {e}")
     st.stop()
 
 # --- 2. PRÉ-PROCESSAMENTO DA IMAGEM ---
@@ -136,7 +147,7 @@ if uploaded_file is not None:
     image = Image.open(uploaded_file).convert('RGB')
     
     # Mostrar imagem
-    st.image(image, caption='Folha carregada', use_column_width=True)
+    st.image(image, caption='Folha carregada', use_container_width=True)
     
     # Botão para diagnosticar
     if st.button('Executar Diagnóstico'):
