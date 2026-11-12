@@ -100,7 +100,7 @@ def predict(image, model_choice, localizacao_ramo, cor_folha, necrose_vshape, st
             # Regra Boro (Linha 1)
             if confidences.get('K', 0) > 0.15 or confidences.get('B', 0) > 0.15:
                 if confidences.get('N', 0) < max(confidences.get('K', 0), confidences.get('B', 0)):
-                    confidences['B'] *= 1.5
+                    confidences['B'] *= 1.7
                     
         elif localizacao_ramo == "Ramo Velho / Base / Indiferente":
             # Regra Azoto - N (Linha 2: Folhas velhas + Amarelecimento uniforme)[cite: 1]
