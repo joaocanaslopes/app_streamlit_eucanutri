@@ -14,14 +14,11 @@ CLASSES = ['B', 'K', 'N', 'P', 'normal', 'não nutricional']
 REPO_ID = "Rainozita/eucalipto-weights" # O teu repo no HF
 
 # --- 1. FUNÇÃO PARA DESCARREGAR E CARREGAR MODELOS (com Cache) ---
-# O st.cache_resource garante que isto só corre uma vez no arranque da app
 @st.cache_resource
 def load_all_models():
     st.info("A inicializar o cérebro da IA... (isto demora um pouco na primeira vez)")
     
     device = torch.device('cpu') # Forçamos CPU para o Streamlit Free Tier
-    
-    # Obter o token de forma segura dos segredos do Streamlit Cloud
     hf_token = st.secrets.get("HF_TOKEN", None)
     
     # --- Definir e Carregar ResNet50 ---
@@ -59,7 +56,7 @@ def load_all_models():
     st.success("Modelos carregados com sucesso do Hugging Face Hub!")
     return model_rn, model_en
 
-# Carregar os modelos (vai buscar à cache se já tiver corrido)
+# Carregar os modelos
 try:
     resnet_model, efficientnet_model = load_all_models()
 except Exception as e:
@@ -74,12 +71,12 @@ transform = transforms.Compose([
 ])
 
 # --- 3. FUNÇÃO DE INFERÊNCIA HÍBRIDA (Adaptada para CPU) ---
-def predict(image, model_choice, localizacao_ramo, estado_folha):
-    # Selecionar o modelo (já estão em CPU)
+def predict(image, model_choice, localizacao_ramo, cor_folha, necrose_vshape, stress_hidrico, presenca_insetos, estado_folha):
+    # Selecionar o modelo
     model = resnet_model if model_choice == "ResNet50" else efficientnet_model
     
     # Processar a imagem
-    img_tensor = transform(image).unsqueeze(0) # Mantém em CPU
+    img_tensor = transform(image).unsqueeze(0)
     
     with torch.no_grad():
         outputs = model(img_tensor)
@@ -90,23 +87,46 @@ def predict(image, model_choice, localizacao_ramo, estado_folha):
     
     # --- REGRAS DE PÓS-PROCESSAMENTO AGRONÓMICO (Lógica Híbrida) ---
     
-    # Regra 1: Filtro de Tecido Assintomático (Normal vs Não Nutricional)
+    # Bloco 6: Filtro de Tecido Assintomático (Normal vs Não Nutricional)
     if estado_folha == "Tecido Assintomático (Sem lesões ou manchas)":
         confidences['normal'] = 0.95
         for k in confidences:
             if k != 'normal':
-                confidences[k] = 0.01 / (len(CLASSES) - 1) # Distribui o resto
+                confidences[k] = 0.01 / (len(CLASSES) - 1)
     
-    # Regra 2: Filtro de Ramo Jovem (Contexto Boro vs Potássio)
-    elif localizacao_ramo == "Ramo Jovem / Topo":
-        # Dá um boost ao Boro se houver dúvida com Potássio
-        if confidences.get('K', 0) > 0.15 or confidences.get('B', 0) > 0.15:
-            # Garante que N não é a classe dominante antes de dar boost a B
-            if confidences.get('N', 0) < max(confidences.get('K', 0), confidences.get('B', 0)):
-                confidences['B'] += 0.35
-                # Normalizar novamente para somar 1
-                total = sum(confidences.values())
-                confidences = {k: v/total for k, v in confidences.items()}
+    else:
+        # Bloco 1 & 2: Zona do Ramo + Cor da Folha (Linha 1, 2 e 3 da Matriz)
+        if localizacao_ramo == "Ramo Jovem / Topo":
+            # Regra Boro (Linha 1)
+            if confidences.get('K', 0) > 0.15 or confidences.get('B', 0) > 0.15:
+                if confidences.get('N', 0) < max(confidences.get('K', 0), confidences.get('B', 0)):
+                    confidences['B'] *= 1.5
+                    
+        elif localizacao_ramo == "Ramo Velho / Base / Indiferente":
+            # Regra Azoto - N (Linha 2: Folhas velhas + Amarelecimento uniforme)[cite: 1]
+            if cor_folha == "Amarelecimento uniforme":
+                confidences['N'] *= 1.5
+                
+            # Regra Fósforo - P (Linha 3: Folhas velhas + Coloração arroxeada/avermelhada)[cite: 1]
+            elif cor_folha == "Coloração arroxeada / avermelhada":
+                confidences['P'] *= 1.5
+
+        # Bloco 3: Necrose em V-shape / Marginal (Linha 4: Potássio - K)[cite: 1]
+        if necrose_vshape == "Sim (Presença de necrose marginal / V-shape)":
+            confidences['K'] *= 1.5
+
+        # Bloco 4: Condições Externas - Défice Hídrico / Salinidade (Linha 5)[cite: 1]
+        if stress_hidrico == "Sim (Presente)":
+            confidences['K'] *= 1.2
+
+        # Bloco 5: Presença de Insetos / Pragas (Boost em Não Nutricional)
+        if presenca_insetos == "Sim":
+            confidences['não nutricional'] *= 1.5
+
+        # Normalizar probabilidades finais para somar 1.0 se algum boost foi aplicado
+        total = sum(confidences.values())
+        if total > 0:
+            confidences = {k: v/total for k, v in confidences.items()}
     
     return confidences
 
@@ -124,20 +144,55 @@ with st.sidebar:
     )
     
     st.markdown("---")
-    st.subheader("Contexto de Campo (Chave Dicotómica)")
+    st.subheader("Chave Dicotómica & Contexto de Campo")
     
+    # Bloco 1: Zona do Ramo
     localizacao_ramo = st.radio(
-        "Localização na Planta:",
-        ["Ramo Jovem / Topo", "Ramo Velho / Base / Indiferente"],
-        index=1,
-        help="Importante para distinguir Boro (Topo) de Potássio (Base)."
+        "1. Zona do Ramo:",
+        ["Desativar este filtro (Teste)", "Ramo Jovem / Topo", "Ramo Velho / Base / Indiferente"],
+        index=2,
+        help="Localização principal do sintome na planta."
     )
     
+    # Bloco 2: Cor da Folha
+    cor_folha = st.radio(
+        "2. Cor / Sintoma Foliar:",
+        ["Desativar este filtro (Teste)", "Amarelecimento uniforme", "Coloração arroxeada / avermelhada", "Outro / Sem padrão específico"],
+        index=3,
+        help="Cruza com folhas velhas para Azoto (N) ou Fósforo (P)."
+    )
+    
+    # Bloco 3: Necrose em V-shape
+    necrose_vshape = st.radio(
+        "3. Necrose Marginal / V-shape (Potássio):",
+        ["Desativar este filtro (Teste)", "Sim (Presença de necrose marginal / V-shape)", "Não"],
+        index=2,
+        help="Indica carência de Potássio (K) agravada."
+    )
+    
+    # Bloco 4: Condições Externas
+    stress_hidrico = st.radio(
+        "4. Condições Externas (Défice Hídrico / Salinidade):",
+        ["Não conclusivo / Irrelevante (Desativar)", "Sim (Presente)", "Não"],
+        index=0,
+        help="CE02 (Défice hídrico) ou CE12 (Salinidade) - Boost em K (*1.2)."
+    )
+    
+    # Bloco 5: Insetos / Pragas
+    presenca_insetos = st.radio(
+        "5. Presença de Insetos / Pragas:",
+        ["Desativar este filtro (Teste)", "Sim", "Não"],
+        index=2,
+        help="Dano biótico (desvia o diagnóstico para Não Nutricional)."
+    )
+    
+    st.markdown("---")
+    # Bloco 6: Integridade Foliar
     estado_folha = st.radio(
-        "Integridade Foliar:",
+        "6. Integridade Foliar (Geral):",
         ["Presença de Sintomas / Danos Visíveis", "Tecido Assintomático (Sem lesões ou manchas)"],
         index=0,
-        help="Ajuda a IA a confirmar se a folha está saudável."
+        help="Filtro rápido para tecido totalmente saudável."
     )
 
 # Área principal
@@ -152,7 +207,7 @@ if uploaded_file is not None:
     # Botão para diagnosticar
     if st.button('Executar Diagnóstico'):
         with st.spinner('A analisar...'):
-            results = predict(image, model_choice, localizacao_ramo, estado_folha)
+            results = predict(image, model_choice, localizacao_ramo, cor_folha, necrose_vshape, stress_hidrico, presenca_insetos, estado_folha)
             
             # Ordenar resultados do maior para o menor
             sorted_results = sorted(results.items(), key=lambda item: item[1], reverse=True)
